@@ -6,6 +6,7 @@ require 'base64'
 require 'httparty'
 require 'fuzzy_match'
 require 'tty-prompt'
+require 'table_print'
 
 number_suffix = "auto"
 cc_statement_path = ARGV[0]
@@ -171,19 +172,28 @@ puts "Last document number: #{number_last}#{number_suffix}, next number: #{numbe
 #receipts
 @receipts = File.exist?(@receipts_json_filename) ? JSON.parse(File.read(@receipts_json_filename)) : get_receipts(receipts_path)
 puts "Found #{@receipts.length} receipts"
-return
 
 
-puts "mapping payments to suppliers"
 @transactions = @payments["transactions"].map do |transaction|
     # fuzzy match supplier name
-    fuzzy = FuzzyMatch.new(@suppliers, read: 'name')
-    similar = fuzzy.find_all(transaction["description"], threshold: 0.3)
-    if similar.length > 0
-        transaction["supplier"] = similar.first
-    end
+    similar_suppliers = FuzzyMatch.new(@suppliers, read: 'name').find_all(transaction["description"], threshold: 0.3)
+    transaction["supplier"] = similar_suppliers.first if similar_suppliers.length > 0
+    similar_receipts = FuzzyMatch.new(@receipts, read: 'supplier_name').find_all(transaction["description"], threshold: 0.3)
+    transaction["receipt"] = similar_receipts.first if similar_receipts.length > 0
     transaction
 end
+puts "Transactions mapped to suppliers"
+tp(@transactions.map do |transaction|
+    {
+        "transaction_description" => transaction["description"],
+        "supplier" => transaction.dig("supplier", "name"),
+        "receipt_date" => transaction.dig("receipt", "date"),
+        "receipt_number" => transaction.dig("receipt", "receipt_number"),
+        "receipt_amount" => transaction.dig("receipt", "amount_total"),
+        "receipt_description" => transaction.dig("receipt", "description")
+    }
+end)
+return
 
 
 # Interactive selection
