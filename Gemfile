@@ -1,3 +1,4 @@
+gem 'fattureincloud_ruby_sdk'
 gem 'fuzzy_match'
 gem 'ruby-openai'
 gem 'httparty'

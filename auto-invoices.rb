@@ -1,6 +1,7 @@
 require 'dotenv'
 Dotenv.load()
 require 'pry'
+require 'fattureincloud_ruby_sdk'
 require 'openai'
 require 'base64'
 require 'httparty'
@@ -17,6 +18,41 @@ receipts_path = ARGV[1]
 @suppliers = nil
 @receipts_json_filename = "auto-invoices-receipts.json"
 @receipts = nil
+
+
+def get_suppliers
+    data = []
+    url = "https://api-v2.fattureincloud.it/c/#{ENV["FATTUREINCLOUD_COMPANY_ID"]}/entities/suppliers?per_page=1000"
+    next_page_url = nil
+    loop do
+        response = HTTParty.get(
+            url,
+            headers: {
+                "Authorization" => "Bearer #{ENV["FATTUREINCLOUD_ACCESS_TOKEN"]}"
+            }
+        )
+        response.dig("data").each do |supplier|
+            data << supplier
+        end
+        url = response.dig("next_page_url")
+        break unless url
+    end
+    #data = data.filter{|s| s["address_city"][0] rescue false}
+    File.write(@suppliers_json_filename, JSON.pretty_generate(data))
+    data
+end
+
+
+def get_document_last_number
+    response = HTTParty.get(
+        "https://api-v2.fattureincloud.it/c/#{ENV["FATTUREINCLOUD_COMPANY_ID"]}/issued_documents?type=self_supplier_invoice&fieldset=detailed&sort=-created_at",
+        headers: {
+            "Authorization" => "Bearer #{ENV["FATTUREINCLOUD_ACCESS_TOKEN"]}"
+        }
+    )
+    number_last = response.dig("data", 0, "number")&.to_i
+    number_last
+end
 
 
 def get_payments(cc_statement_path)
@@ -59,10 +95,16 @@ def get_receipt_data(file_path)
     data = []
     pdf_content = File.read(file_path)
     client = OpenAI::Client.new(access_token: ENV["OPENAI_API_KEY"])
+    suppliers_for_match = @suppliers.map{|s| {id: s["id"], name: s["name"]}}
     prompt = "
         Analizza ricevuta per pagamento PDF ed estrai i dati essenziali in formato JSON con: date (data del pagamento), receipt_number (numero della ricevuta o invoice number), description (descrizione), amount_total (importo totale), supplier_name (nome del fornitore).
         In amount_total indica solo il numero, non la valuta. 
+        La data deve essere in formato yyyy-mm-dd.
         Metti la valuta in attributo currency.
+        Aggiungi attributo matched_supplier_id e matched_supplier_name.
+        Ti aggiungo i fornitori per il match come json: #{suppliers_for_match.to_json}.
+        Prova a impostare matched_supplier_id e matched_supplier_name in base al campo description o supplier_name, non usare una ricerca esatta, ma una ricerca fuzzy.
+        Se non trovi un fornitore, lascia matched_supplier_id e matched_supplier_name vuoti.
     "
     content = [
     { type: "text", text: prompt },
@@ -92,38 +134,16 @@ def get_receipt_data(file_path)
 end
 
 
-def get_suppliers
+def get_receipts(receipts_path)
     data = []
-    url = "https://api-v2.fattureincloud.it/c/#{ENV["FATTUREINCLOUD_COMPANY_ID"]}/entities/suppliers?per_page=1000"
-    next_page_url = nil
-    loop do
-        response = HTTParty.get(
-            url,
-            headers: {
-                "Authorization" => "Bearer #{ENV["FATTUREINCLOUD_ACCESS_TOKEN"]}"
-            }
-        )
-        response.dig("data").each do |supplier|
-            data << supplier
-        end
-        url = response.dig("next_page_url")
-        break unless url
+    files = Dir.glob(File.join(receipts_path, "*.*"))
+    puts "Found #{files.length} receipts"
+    files.each do |file|
+        puts "Processing #{File.basename(file)}"
+        data << get_receipt_data(file)
     end
-    #data = data.filter{|s| s["address_city"][0] rescue false}
-    File.write(@suppliers_json_filename, JSON.pretty_generate(data))
+    File.write(@receipts_json_filename, JSON.pretty_generate(data))
     data
-end
-
-
-def get_document_last_number
-    response = HTTParty.get(
-        "https://api-v2.fattureincloud.it/c/#{ENV["FATTUREINCLOUD_COMPANY_ID"]}/issued_documents?type=self_supplier_invoice&fieldset=detailed&sort=-created_at",
-        headers: {
-            "Authorization" => "Bearer #{ENV["FATTUREINCLOUD_ACCESS_TOKEN"]}"
-        }
-    )
-    number_last = response.dig("data", 0, "number")&.to_i
-    number_last
 end
 
 
@@ -145,18 +165,13 @@ def report_similar_suppliers
 end
 
 
-def get_receipts(receipts_path)
-    data = []
-    files = Dir.glob(File.join(receipts_path, "*.*"))
-    puts "Found #{files.length} receipts"
-    files.each do |file|
-        puts "Processing #{File.basename(file)}"
-        data << get_receipt_data(file)
-    end
-    File.write(@receipts_json_filename, JSON.pretty_generate(data))
-    data
-end
-
+#auth
+redirect_uri = 'http://localhost:3000/'
+oauth = FattureInCloud_Ruby_Sdk::OAuth2AuthorizationCodeManager.new(ENV["FATTUREINCLOUD_CLIENT_ID"], ENV["FATTUREINCLOUD_CLIENT_SECRET"], redirect_uri)
+scopes = [FattureInCloud_Ruby_Sdk::Scope::SETTINGS_ALL, FattureInCloud_Ruby_Sdk::Scope::ISSUED_DOCUMENTS_INVOICES_READ]
+url = oauth.get_authorization_url(scopes, 'EXAMPLE_STATE')
+puts url
+return
 
 #payments
 @payments = File.exist?(@payments_json_filename) ? JSON.parse(File.read(@payments_json_filename)) : get_payments(cc_statement_path)
@@ -174,33 +189,10 @@ puts "Last document number: #{number_last}#{number_suffix}, next number: #{numbe
 puts "Found #{@receipts.length} receipts"
 
 
-@transactions = @payments["transactions"].map do |transaction|
-    # fuzzy match supplier name
-    similar_suppliers = FuzzyMatch.new(@suppliers, read: 'name').find_all(transaction["description"], threshold: 0.3)
-    transaction["supplier"] = similar_suppliers.first if similar_suppliers.length > 0
-    similar_receipts = FuzzyMatch.new(@receipts, read: 'supplier_name').find_all(transaction["description"], threshold: 0.3)
-    transaction["receipt"] = similar_receipts.first if similar_receipts.length > 0
-    transaction
-end
-puts "Transactions mapped to suppliers"
-tp(@transactions.map do |transaction|
-    {
-        "transaction_description" => transaction["description"],
-        "supplier" => transaction.dig("supplier", "name"),
-        "receipt_date" => transaction.dig("receipt", "date"),
-        "receipt_number" => transaction.dig("receipt", "receipt_number"),
-        "receipt_amount" => transaction.dig("receipt", "amount_total"),
-        "receipt_description" => transaction.dig("receipt", "description")
-    }
-end)
-return
-
-
 # Interactive selection
 prompt = TTY::Prompt.new
-choices = @transactions.map.with_index do |transaction, index|
-  supplier_name = transaction["supplier"] ? transaction["supplier"]["name"] : "(no match)"
-  label = "#{transaction["description"]} → #{supplier_name}"
+choices = @receipts.map.with_index do |receipt, index|
+  label = "#{receipt["description"]} #{receipt["amount_total"]} → #{receipt["matched_supplier_name"].length > 0 ? receipt["matched_supplier_name"] : "(no match)"}"
   { name: label, value: index }
 end
 
@@ -213,15 +205,10 @@ selected_indices = prompt.multi_select(
 )
 
 if selected_indices.any?
-  selected_transactions = selected_indices.map { |idx| @transactions[idx] }
-  selected_transactions.each do |transaction|
-    supplier_name = transaction["supplier"] ? transaction["supplier"]["name"] : "(no match)"
-    supplier_id = transaction["supplier"] ? transaction["supplier"]["id"] : nil
-    puts "\n#{transaction["description"]}"
-    puts "  → Supplier: #{supplier_name}"
-    puts "  → Supplier ID: #{supplier_id}" if supplier_id
-    puts "  → Amount: €#{transaction["amount_euro"]}"
-    puts "  → Date: #{transaction["date"]}"
+  selected_receipts = selected_indices.map { |idx| @receipts[idx] }
+  selected_receipts.each do |receipt|
+    puts "Creating invoice #{number_next}#{number_suffix} for #{receipt["matched_supplier_name"]} #{receipt["amount_total"]} €"
+    number_next += 1
   end
 
 else
