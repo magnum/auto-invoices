@@ -64,7 +64,7 @@ ruby auto-invoices.rb path/to/credit_card_statement.pdf path/to/receipts/folder
 ### Example
 
 ```bash
-ruby auto-invoices.rb data/test/credit_cart_statement.pdf data/test/
+ruby auto-invoices.rb data/testd.pdf data/test/
 ```
 
 ### What Happens
@@ -96,7 +96,7 @@ auto-invoices/
 ├── .env                           # API credentials (create this)
 ├── data/                          # Test data directory
 │   └── test/
-│       ├── credit_cart_statement.pdf
+│       ├── credit_card_statement.pdf
 │       └── receipt1.pdf
 ├── auto-invoices-payments.json   # Generated: cached payments
 ├── auto-invoices-suppliers.json  # Generated: cached suppliers
