@@ -1,0 +1,381 @@
+{
+	"info": {
+		"_postman_id": "59a794be-205f-4b8b-b70b-8dd56a2714f5",
+		"name": "Fatture in Cloud test",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "10855",
+		"_collection_link": "https://antomoli.postman.co/workspace/incode~9df3f5f1-246d-4e50-b4cc-1bdea7efeec6/collection/10855-59a794be-205f-4b8b-b70b-8dd56a2714f5?action=share&source=collection_link&creator=10855"
+	},
+	"item": [
+		{
+			"name": "companies",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.environment.set(\"company_id\", pm.response.json().data.companies[0].id)"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "https://api-v2.fattureincloud.it/user/companies",
+					"protocol": "https",
+					"host": [
+						"api-v2",
+						"fattureincloud",
+						"it"
+					],
+					"path": [
+						"user",
+						"companies"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "invoices",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"const rows = pm.response.json().data",
+							".reduce( (list, invoice) => {",
+							"    /*return {",
+							"        number: invoice.number,",
+							"        date: invoice.date,",
+							"        customer: invoice.entity.name,",
+							"        amount_net: invoice.amount_net,",
+							"        items_list: invoice.items_list.map( item => ({name,quantity, net_price} = item, {name, quantity, net_price}) )",
+							"    }*/",
+							"    const items_attributes = invoice.items_list.map( item => ({name, quantity, net_price} = item, {name, quantity, net_price}) )",
+							"    const items = invoice.items_list.map( item => {",
+							"        return {",
+							"            number: invoice.number,",
+							"            date: invoice.date,",
+							"            customer: invoice.entity.name,",
+							"            amount_net: invoice.amount_net,",
+							"            description: item.name,",
+							"            qty: item.qty,",
+							"            net_price: item.net_price,",
+							"        }",
+							"    })",
+							"    return list.add(items)",
+							"}, [])",
+							";",
+							"console.log(rows)"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"protocolProfileBehavior": {
+				"disableBodyPruning": true
+			},
+			"request": {
+				"method": "GET",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"type\": \"invoice\",\n    \"per_page\": 5,\n    \"fieldset\": \"detailed\",\n    \"sort\": \"-number,-date\",\n    \"q\": \"date>'2023-01-01'\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://api-v2.fattureincloud.it/c/{{company_id}}/issued_documents",
+					"protocol": "https",
+					"host": [
+						"api-v2",
+						"fattureincloud",
+						"it"
+					],
+					"path": [
+						"c",
+						"{{company_id}}",
+						"issued_documents"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "suppliers",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"const rows = pm.response.json().data",
+							".reduce( (list, invoice) => {",
+							"    /*return {",
+							"        number: invoice.number,",
+							"        date: invoice.date,",
+							"        customer: invoice.entity.name,",
+							"        amount_net: invoice.amount_net,",
+							"        items_list: invoice.items_list.map( item => ({name,quantity, net_price} = item, {name, quantity, net_price}) )",
+							"    }*/",
+							"    const items_attributes = invoice.items_list.map( item => ({name, quantity, net_price} = item, {name, quantity, net_price}) )",
+							"    const items = invoice.items_list.map( item => {",
+							"        return {",
+							"            number: invoice.number,",
+							"            date: invoice.date,",
+							"            customer: invoice.entity.name,",
+							"            amount_net: invoice.amount_net,",
+							"            description: item.name,",
+							"            qty: item.qty,",
+							"            net_price: item.net_price,",
+							"        }",
+							"    })",
+							"    return list.add(items)",
+							"}, [])",
+							";",
+							"console.log(rows)"
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"protocolProfileBehavior": {
+				"disableBodyPruning": true
+			},
+			"request": {
+				"method": "GET",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://api-v2.fattureincloud.it/c/{{company_id}}/entities/suppliers?per_page=1000&page=5&fieldset=detailed",
+					"protocol": "https",
+					"host": [
+						"api-v2",
+						"fattureincloud",
+						"it"
+					],
+					"path": [
+						"c",
+						"{{company_id}}",
+						"entities",
+						"suppliers"
+					],
+					"query": [
+						{
+							"key": "per_page",
+							"value": "1000"
+						},
+						{
+							"key": "page",
+							"value": "5"
+						},
+						{
+							"key": "fieldset",
+							"value": "detailed"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "issued_documents",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"const rows = pm.response.json().data",
+							".reduce( (list, invoice) => {",
+							"    /*return {",
+							"        number: invoice.number,",
+							"        date: invoice.date,",
+							"        customer: invoice.entity.name,",
+							"        amount_net: invoice.amount_net,",
+							"        items_list: invoice.items_list.map( item => ({name,quantity, net_price} = item, {name, quantity, net_price}) )",
+							"    }*/",
+							"    const items_attributes = invoice.items_list.map( item => ({name, quantity, net_price} = item, {name, quantity, net_price}) )",
+							"    const items = invoice.items_list.map( item => {",
+							"        return {",
+							"            number: invoice.number,",
+							"            date: invoice.date,",
+							"            customer: invoice.entity.name,",
+							"            amount_net: invoice.amount_net,",
+							"            description: item.name,",
+							"            qty: item.qty,",
+							"            net_price: item.net_price,",
+							"        }",
+							"    })",
+							"    return list.add(items)",
+							"}, [])",
+							";",
+							"console.log(rows)"
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"protocolProfileBehavior": {
+				"disableBodyPruning": true
+			},
+			"request": {
+				"method": "GET",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://api-v2.fattureincloud.it/c/{{company_id}}/issued_documents?type=self_supplier_invoice&fieldset=detailed&sort=-created_at",
+					"protocol": "https",
+					"host": [
+						"api-v2",
+						"fattureincloud",
+						"it"
+					],
+					"path": [
+						"c",
+						"{{company_id}}",
+						"issued_documents"
+					],
+					"query": [
+						{
+							"key": "type",
+							"value": "self_supplier_invoice"
+						},
+						{
+							"key": "fieldset",
+							"value": "detailed"
+						},
+						{
+							"key": "sort",
+							"value": "-created_at"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "create issued document",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"const rows = pm.response.json().data",
+							".reduce( (list, invoice) => {",
+							"    /*return {",
+							"        number: invoice.number,",
+							"        date: invoice.date,",
+							"        customer: invoice.entity.name,",
+							"        amount_net: invoice.amount_net,",
+							"        items_list: invoice.items_list.map( item => ({name,quantity, net_price} = item, {name, quantity, net_price}) )",
+							"    }*/",
+							"    const items_attributes = invoice.items_list.map( item => ({name, quantity, net_price} = item, {name, quantity, net_price}) )",
+							"    const items = invoice.items_list.map( item => {",
+							"        return {",
+							"            number: invoice.number,",
+							"            date: invoice.date,",
+							"            customer: invoice.entity.name,",
+							"            amount_net: invoice.amount_net,",
+							"            description: item.name,",
+							"            qty: item.qty,",
+							"            net_price: item.net_price,",
+							"        }",
+							"    })",
+							"    return list.add(items)",
+							"}, [])",
+							";",
+							"console.log(rows)"
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"data\": {\n    \"type\": \"self_supplier_invoice\",\n    \"numeration\": \"auto\",\n    \"subject\": \"test\",\n    \"entity\": {\n      \"id\": 24268660,\n      \"name\": \"test\"\n    },\n    \"date\": \"2025-10-13\",\n    \"number\": 140,\n    \"items_list\": [\n      {\n        \"name\": \"servizi\",\n        \"net_price\": 100,\n        \"apply_withholding_taxes\": false,\n        \"qty\": 1,\n        \"stock\": true,\n        \"description\": \"descrizione\"\n      }\n    ],\n    \"payments_list\": [\n      {\n        \"amount\": 122,\n        \"due_date\": \"2025-10-13\",\n        \"payment_terms\": {\n          \"days\": 0,\n          \"type\": \"standard\"\n        },\n        \"status\": \"not_paid\"\n      }\n    ]\n  }\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://api-v2.fattureincloud.it/c/{{company_id}}/issued_documents",
+					"protocol": "https",
+					"host": [
+						"api-v2",
+						"fattureincloud",
+						"it"
+					],
+					"path": [
+						"c",
+						"{{company_id}}",
+						"issued_documents"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{access_token}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	]
+}
