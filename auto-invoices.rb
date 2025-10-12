@@ -9,7 +9,7 @@ require 'fuzzy_match'
 require 'tty-prompt'
 require 'table_print'
 
-number_suffix = "auto"
+@number_suffix = "auto"
 cc_statement_path = ARGV[0]
 receipts_path = ARGV[1]
 @payments_json_filename = "auto-invoices-payments.json"
@@ -20,15 +20,38 @@ receipts_path = ARGV[1]
 @receipts = nil
 
 
+FattureInCloud_Ruby_Sdk.configure do |config|
+    @access_token = JSON.parse(File.read("./token.json"))["access_token"] rescue nil
+    unless @access_token
+        puts "access_token not found, run ruby index.rb and visit the http://localhost:3000/oauth to set it" 
+        return
+    end
+    config.access_token = @access_token
+end
+@api_instance = FattureInCloud_Ruby_Sdk::IssuedDocumentsApi.new
+
+
+def json_read(code)
+    filename = "auto-invoices-#{code}.json"
+    return nil unless File.exist?(filename)
+    JSON.parse(File.read(filename))
+end
+
+
+def json_write(code, data)
+    File.write("auto-invoices-#{code}.json", JSON.pretty_generate(data))
+end
+
+
 def get_suppliers
     data = []
-    url = "https://api-v2.fattureincloud.it/c/#{ENV["FATTUREINCLOUD_COMPANY_ID"]}/entities/suppliers?per_page=1000"
+    url = "https://api-v2.fattureincloud.it/c/#{ENV["FATTUREINCLOUD_COMPANY_ID"]}/entities/suppliers?per_page=1000&fieldset=detailed"
     next_page_url = nil
     loop do
         response = HTTParty.get(
             url,
             headers: {
-                "Authorization" => "Bearer #{ENV["FATTUREINCLOUD_ACCESS_TOKEN"]}"
+                "Authorization" => "Bearer #{@access_token}"
             }
         )
         response.dig("data").each do |supplier|
@@ -38,7 +61,7 @@ def get_suppliers
         break unless url
     end
     #data = data.filter{|s| s["address_city"][0] rescue false}
-    File.write(@suppliers_json_filename, JSON.pretty_generate(data))
+    json_write("suppliers", data)
     data
 end
 
@@ -47,11 +70,11 @@ def get_document_last_number
     response = HTTParty.get(
         "https://api-v2.fattureincloud.it/c/#{ENV["FATTUREINCLOUD_COMPANY_ID"]}/issued_documents?type=self_supplier_invoice&fieldset=detailed&sort=-created_at",
         headers: {
-            "Authorization" => "Bearer #{ENV["FATTUREINCLOUD_ACCESS_TOKEN"]}"
+            "Authorization" => "Bearer #{@access_token}"
         }
     )
-    number_last = response.dig("data", 0, "number")&.to_i
-    number_last
+    @number_last = response.dig("data", 0, "number")&.to_i
+    @number_last
 end
 
 
@@ -86,7 +109,7 @@ def get_payments(cc_statement_path)
     content = response.dig("choices", 0, "message", "content")
     content =~ /\A```json\s*(.*?)\s*```\s*\z/m  ? json_str = $1 : json_str = content
     data = JSON.parse(json_str)
-    File.write(@payments_json_filename, JSON.pretty_generate(data))
+    json_write("payments", data)
     data
 end
 
@@ -142,7 +165,7 @@ def get_receipts(receipts_path)
         puts "Processing #{File.basename(file)}"
         data << get_receipt_data(file)
     end
-    File.write(@receipts_json_filename, JSON.pretty_generate(data))
+    json_write("receipts", data)
     data
 end
 
@@ -165,28 +188,161 @@ def report_similar_suppliers
 end
 
 
-#auth
-redirect_uri = 'http://localhost:3000/'
-oauth = FattureInCloud_Ruby_Sdk::OAuth2AuthorizationCodeManager.new(ENV["FATTUREINCLOUD_CLIENT_ID"], ENV["FATTUREINCLOUD_CLIENT_SECRET"], redirect_uri)
-scopes = [FattureInCloud_Ruby_Sdk::Scope::SETTINGS_ALL, FattureInCloud_Ruby_Sdk::Scope::ISSUED_DOCUMENTS_INVOICES_READ]
-url = oauth.get_authorization_url(scopes, 'EXAMPLE_STATE')
-puts url
-return
+def create_document2(receipt)
+    puts "Creating invoice #{@number_next}#{@number_suffix} for #{receipt["matched_supplier_name"]} #{receipt["amount_total"]} €"
+    @api_instance = FattureInCloud_Ruby_Sdk::IssuedDocumentsApi.new(FattureInCloud_Ruby_Sdk::ApiClient.new(@access_token))
+    invoice = FattureInCloud_Ruby_Sdk::IssuedDocument.new(
+        type: FattureInCloud_Ruby_Sdk::IssuedDocumentType::INVOICE,
+        entity: receipt["supplier"],
+        date: Date.parse(receipt["date"]),
+        number: @number_next,
+        numeration: @number_suffix,
+        #subject: "servizi, #{receipt["description"]}",
+        #visible_subject: "visible subject",
+        # Retrieve the currencies: https://github.com/fattureincloud/fattureincloud-ruby-sdk/blob/master/docs/InfoApi.md#list_currencies
+        currency: FattureInCloud_Ruby_Sdk::Currency.new( id: "EUR"),
+        # Retrieve the languages: https://github.com/fattureincloud/fattureincloud-ruby-sdk/blob/master/docs/InfoApi.md#list_languages
+        #language: FattureInCloud_Ruby_Sdk::Language.new(code: "it",name: "italiano"),
+        items_list: Array(
+            FattureInCloud_Ruby_Sdk::IssuedDocumentItemsListItem.new(
+                name: "servizi, #{receipt["description"]}",
+                net_price: receipt["amount_total"],
+                qty: 1,
+                # vat: FattureInCloud_Ruby_Sdk::VatType.new(
+                #     id: 0
+                # )
+            )
+        ),
+        payments_list: Array(
+            FattureInCloud_Ruby_Sdk::IssuedDocumentPaymentsListItem.new(
+                amount: 122,
+                due_date: Date.parse(receipt["date"]),
+                paid_date: Date.parse(receipt["date"]),
+                #https://github.com/fattureincloud/fattureincloud-ruby-sdk/blob/a8f115b44e267d3c225ae893968e3b70d89d4f9f/lib/fattureincloud_ruby_sdk/models/issued_document_status.rb#L17
+                status: FattureInCloud_Ruby_Sdk::IssuedDocumentStatus::REVERSED,
+            )
+        ),
+        ei_raw: {
+            FatturaElettronicaBody: {
+                DatiGenerali: {
+                    DatiFattureCollegate: [
+                        {
+                            IdDocumento: receipt["receipt_number"],
+                            DataDocumento: Date.parse(receipt["date"]).strftime("%Y-%m-%d"),
+                        }
+                    ]
+                }
+            }
+        }
+    )
+    # Here we put our invoice in the request object
+    opts = {
+        create_issued_document_request: FattureInCloud_Ruby_Sdk::CreateIssuedDocumentRequest.new(data: invoice)
+    }
+    # Now we are all set for the final call
+    # Create the invoice: https://github.com/fattureincloud/fattureincloud-ruby-sdk/blob/master/docs/IssuedDocumentsApi.md#create_issued_document
+    begin
+        result = @api_instance.create_issued_document(ENV["FATTUREINCLOUD_COMPANY_ID"], opts)
+        p result
+    rescue FattureInCloud_Ruby_Sdk::ApiError => e
+        puts "Error when calling IssuedDocumentsApi->create_issued_document: #{e}"
+    end
+end
+
+
+def create_document(receipt)
+    data = {
+        data: {
+            type: "self_supplier_invoice",
+            numeration: "auto",
+            #subject: "test",
+            entity: receipt["supplier"].merge({
+                e_invoice: true,
+                ei_code: "M5UXCR1",
+                entity_type: "supplier",
+                type: "company",
+            }),
+            date: receipt["date"],
+            number: @number_next,
+            use_gross_prices: false,
+            items_list: [
+                {
+                    name: "servizi",
+                    net_price: receipt["amount_total"],
+                    apply_withholding_taxes: false,
+                    qty: 1,
+                    description: "servizi, #{receipt["description"]}"
+                }
+            ],
+            payments_list: [
+                {
+                    amount: receipt["amount_total"]*1.22,
+                    "status": "reversed",
+                    "due_date": receipt["date"],
+                }
+            ],
+            e_invoice: true,
+            ei_data: {
+                #https://www.fatturapa.gov.it/export/documenti/fatturapa/v1.3/Rappresentazione-tabellare-fattura-ordinaria.pdf
+                payment_method: "MP08",
+                document_type: "TD17"
+            },
+            ei_raw: {
+                "FatturaElettronicaBody": {
+                    "DatiGenerali": {
+                        "DatiGeneraliDocumento": {
+                            "TipoDocumento": "TD17"
+                        },
+                        "DatiFattureCollegate": [
+                            {
+                                "Data": Date.parse(receipt["date"]).strftime("%Y-%m-%d"),
+                                "IdDocumento": receipt["receipt_number"]
+                            }
+                        ]
+                    }
+                },
+                "FatturaElettronicaHeader": {
+                    "CedentePrestatore": {
+                        "DatiAnagrafici": {
+                            "RegimeFiscale": "RF01"
+                        }
+                    }
+                }
+            }
+        },
+    }
+    response = HTTParty.post(
+        "https://api-v2.fattureincloud.it/c/#{ENV["FATTUREINCLOUD_COMPANY_ID"]}/issued_documents",
+        headers: {
+            "Authorization" => "Bearer #{@access_token}",
+            "Content-Type" => "application/json",
+        },
+        body: data.to_json
+    )
+    #binding.pry
+end
 
 #payments
-@payments = File.exist?(@payments_json_filename) ? JSON.parse(File.read(@payments_json_filename)) : get_payments(cc_statement_path)
+@payments = json_read("payments") || get_payments(cc_statement_path)
 puts "Found #{@payments["transactions"].length} payments from credit card statement .pdf file"
 #suppliers
-@suppliers = File.exist?(@suppliers_json_filename) ? JSON.parse(File.read(@suppliers_json_filename)) : get_suppliers
+@suppliers = json_read("suppliers") || get_suppliers
 puts "Read #{@suppliers.length} suppliers from Fatture in Cloud"
 #report_similar_suppliers
 # last document number
-number_last = get_document_last_number
-number_next = number_last + 1
-puts "Last document number: #{number_last}#{number_suffix}, next number: #{number_next}#{number_suffix}"
+@number_last = get_document_last_number
+@number_next = @number_last + 1
+puts "Last document number: #{@number_last}#{@number_suffix}, next number: #{@number_next}#{@number_suffix}"
 #receipts
-@receipts = File.exist?(@receipts_json_filename) ? JSON.parse(File.read(@receipts_json_filename)) : get_receipts(receipts_path)
+@receipts = json_read("receipts") || get_receipts(receipts_path)
 puts "Found #{@receipts.length} receipts"
+@receipts =@receipts.map do |receipt|
+   next if receipt["matched_supplier_name"].length == 0
+   receipt["supplier"] = @suppliers.find{|s| s["id"].to_s == receipt["matched_supplier_id"].to_s}
+   receipt
+end
+json_write("receipts", @receipts)
+
 
 
 # Interactive selection
@@ -207,8 +363,9 @@ selected_indices = prompt.multi_select(
 if selected_indices.any?
   selected_receipts = selected_indices.map { |idx| @receipts[idx] }
   selected_receipts.each do |receipt|
-    puts "Creating invoice #{number_next}#{number_suffix} for #{receipt["matched_supplier_name"]} #{receipt["amount_total"]} €"
-    number_next += 1
+    puts "Creating invoice #{@number_next}#{@number_suffix} for #{receipt["matched_supplier_name"]} #{receipt["amount_total"]} €"
+    create_document(receipt)
+    @number_next += 1
   end
 
 else

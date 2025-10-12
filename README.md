@@ -51,6 +51,24 @@ The script uses the following environment variables:
 - `FATTUREINCLOUD_COMPANY_ID`: Your company ID from Fatture in Cloud
 - `FATTUREINCLOUD_ACCESS_TOKEN`: Your API access token from Fatture in Cloud
 
+### Setting Up OAuth Token
+
+To obtain the Fatture in Cloud access token via OAuth:
+
+1. Start the OAuth server:
+```bash
+ruby index.rb
+```
+
+2. Visit the OAuth authorization page in your browser:
+```
+http://localhost:3000/oauth
+```
+
+3. Follow the OAuth flow to authorize the application. The access token will be saved to `token.json`
+
+4. The token from `token.json` can then be used as your `FATTUREINCLOUD_ACCESS_TOKEN` in the `.env` file
+
 ## Usage
 
 ### Basic Usage
@@ -64,8 +82,10 @@ ruby auto-invoices.rb path/to/credit_card_statement.pdf path/to/receipts/folder
 ### Example
 
 ```bash
-ruby auto-invoices.rb data/testd.pdf data/test/
+ruby auto-invoices.rb data/credit_card_statement.pdf "/Users/magnum/Google Drive/Drive condivisi/shared drive/incode - documenti condivisi/2025/acquisti estero/settembre"
 ```
+
+This command processes the credit card statement and matches transactions with receipts in the specified Google Drive folder.
 
 ### What Happens
 
@@ -96,8 +116,6 @@ auto-invoices/
 ├── .env                           # API credentials (create this)
 ├── data/                          # Test data directory
 │   └── test/
-│       ├── credit_card_statement.pdf
-│       └── receipt1.pdf
 ├── auto-invoices-payments.json   # Generated: cached payments
 ├── auto-invoices-suppliers.json  # Generated: cached suppliers
 └── auto-invoices-receipts.json   # Generated: cached receipts
@@ -193,4 +211,9 @@ Potential improvements could include:
 ## Author
 
 Antonio Molinari - antoniomolinari@me.com
+
+
+## References
+### fattureincloud
+- https://developers.fattureincloud.it/docs/guides/e-invoice-xml-customisation/
 

@@ -1,3 +1,4 @@
 data
 .env
+token.json
 auto-invoices*.json
