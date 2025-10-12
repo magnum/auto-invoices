@@ -73,19 +73,30 @@ http://localhost:3000/oauth
 
 ### Basic Usage
 
-Run the script with paths to your credit card statement and receipts folder:
+Run the script with the following command line parameters:
 
 ```bash
-ruby auto-invoices.rb path/to/credit_card_statement.pdf path/to/receipts/folder
+ruby auto-invoices.rb <date> <subdir> <cc_statement_path> <receipts_path>
 ```
+
+**Parameters:**
+
+- `date` - The date for the invoice (format: YYYY-MM-DD)
+- `subdir` - Subdirectory under `data/` where JSON cache files will be stored
+- `cc_statement_path` - Path to the credit card statement PDF file
+- `receipts_path` - Path to the folder containing receipt PDF files
 
 ### Example
 
 ```bash
-ruby auto-invoices.rb data/credit_card_statement.pdf "/Users/magnum/Google Drive/Drive condivisi/shared drive/incode - documenti condivisi/2025/acquisti estero/settembre"
+ruby auto-invoices.rb 2025-09-30 my-subfolder data/credit_card_statement.pdf "/path/to/receipts"
 ```
 
-This command processes the credit card statement and matches transactions with receipts in the specified Google Drive folder.
+This command:
+1. Sets the invoice date
+2. Stores JSON cache files in the specified subfolder
+3. Processes the credit card statement PDF
+4. Analyzes receipt PDFs in the specified folder
 
 ### What Happens
 
@@ -97,13 +108,15 @@ This command processes the credit card statement and matches transactions with r
    - Use ↑/↓ arrow keys to navigate
    - Press SPACE to select/deselect items
    - Press ENTER to confirm your selection
+6. **Receipt Creation**: After selecting items, the system attempts to create receipts in Fatture in Cloud
+7. **Error Reporting**: If any receipts fail to be created (due to validation errors, missing data, or API issues), the system will output a list of errors at the end for manual intervention and receipt creation
 
 ### Data Caching
 
-The script creates three JSON cache files:
-- `auto-invoices-payments.json`: Extracted credit card transactions
-- `auto-invoices-suppliers.json`: Cached supplier data from Fatture in Cloud
-- `auto-invoices-receipts.json`: Extracted receipt data
+The script creates three JSON cache files in the subfolder specified via command line:
+- `payments.json`: Extracted credit card transactions
+- `suppliers.json`: Cached supplier data from Fatture in Cloud
+- `receipts.json`: Extracted receipt data
 
 If these files exist, the script will use the cached data instead of re-processing, saving time and API costs. Delete these files to force a fresh extraction.
 
@@ -114,11 +127,13 @@ auto-invoices/
 ├── auto-invoices.rb              # Main script
 ├── Gemfile                        # Ruby dependencies
 ├── .env                           # API credentials (create this)
-├── data/                          # Test data directory
-│   └── test/
-├── auto-invoices-payments.json   # Generated: cached payments
-├── auto-invoices-suppliers.json  # Generated: cached suppliers
-└── auto-invoices-receipts.json   # Generated: cached receipts
+├── token.json                     # OAuth access token
+├── data/                          # Data directory
+│   └── <subdir>/                 # Subfolder specified via command line
+│       ├── payments.json         # Generated: cached payments
+│       ├── suppliers.json        # Generated: cached suppliers
+│       └── receipts.json         # Generated: cached receipts
+└── README.md
 ```
 
 ## How It Works
@@ -174,21 +189,23 @@ The script includes a `report_similar_suppliers` function (currently commented o
 
 ## Limitations & Notes
 
-- Currently, the script processes transactions but stops before creating actual invoices (see line 174: `return` statement)
+- The script creates self-supplier invoices (auto-fatture) in Fatture in Cloud
+- Some receipts may fail validation and require manual intervention (these are reported as errors at the end)
 - The script is designed for Italian accounting workflows (Fatture in Cloud, Italian prompts)
 - AI extraction accuracy depends on PDF quality and format
 - API costs apply for OpenAI GPT-4o usage (approximately $0.01-0.03 per PDF page)
 - Large credit card statements may require multiple API calls
+- Failed receipt creations are collected and displayed at the end for manual processing
 
 ## Future Enhancements
 
 Potential improvements could include:
-- Automatic invoice creation in Fatture in Cloud
 - Support for multiple credit card statements
-- Receipt-to-transaction matching
+- Improved error handling and retry mechanisms
 - Export to other accounting platforms
 - Command-line options for threshold tuning
 - Multi-language support
+- Batch processing of multiple periods
 
 ## Troubleshooting
 
@@ -196,13 +213,16 @@ Potential improvements could include:
 - Solution: Check your API keys and account limits
 
 **Issue**: Poor matching results
-- Solution: Adjust the fuzzy matching threshold (line 181)
+- Solution: Adjust the fuzzy matching threshold in the code
 
 **Issue**: Missing transactions
-- Solution: Delete cache files and re-run to force fresh extraction
+- Solution: Delete cache files in the subfolder and re-run to force fresh extraction
 
 **Issue**: PDF not recognized
 - Solution: Ensure PDFs are not encrypted or password-protected
+
+**Issue**: Receipt creation errors displayed at the end
+- Solution: Review the error list and manually create receipts in Fatture in Cloud for items that failed validation. Common issues include missing supplier data, invalid dates, or incorrect amounts
 
 ## License
 
