@@ -9,6 +9,12 @@ require 'fuzzy_match'
 require 'tty-prompt'
 require 'table_print'
 
+# Gracefully handle Ctrl+C
+Signal.trap("INT") do
+  puts "\n\nExiting gracefully..."
+  exit 0
+end
+
 @number_suffix = "auto"
 cc_statement_path = ARGV[0]
 receipts_path = ARGV[1]
