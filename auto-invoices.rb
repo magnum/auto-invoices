@@ -82,6 +82,8 @@ def get_document_last_number
         }
     )
     @number_last = response.dig("data", 0, "number")&.to_i
+    #binding.pry
+    raise "get_document_last_number error: #{response.dig("error")} #{response.dig("error_description")}" if response.dig("error")
     @number_last
 end
 
