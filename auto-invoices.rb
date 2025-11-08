@@ -81,7 +81,7 @@ def get_document_last_number
             "Authorization" => "Bearer #{@fic_access_token}"
         }
     )
-    @number_last = response.dig("data", 0, "number")&.to_i
+    @number_last = response.dig("data").map{|doc| doc["number"]}.sort.last&.to_i
     #binding.pry
     raise "get_document_last_number error: #{response.dig("error")} #{response.dig("error_description")}" if response.dig("error")
     @number_last
@@ -126,6 +126,7 @@ def get_payments
     content =~ /\A```json\s*(.*?)\s*```\s*\z/m  ? json_str = $1 : json_str = content
     data = JSON.parse(json_str)
     json_write("payments", data)
+    #binding.pry
     data
 end
 
@@ -300,6 +301,7 @@ end
 
 #payments
 @payments = json_read("payments") || get_payments
+#binding.pry
 puts "Found #{@payments["transactions"].length} payments from credit card statement '#{File.basename(@config[:cc_statement_path])}'"
 #suppliers
 @suppliers = json_read("suppliers") || get_suppliers
