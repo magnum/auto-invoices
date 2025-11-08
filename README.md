@@ -76,8 +76,9 @@ http://localhost:3000/oauth
 Run the script with the following command line parameters:
 
 ```bash
-ruby auto-invoices.rb <date> <subdir> <cc_statement_path> <receipts_path>
+bundle exec ruby auto-invoices.rb <date> <subdir> <cc_statement_path> <receipts_path>
 ```
+Please remember to use Bundler to avoid naming conflicts with gems, for example, when using 'openai'.
 
 **Parameters:**
 

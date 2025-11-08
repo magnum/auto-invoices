@@ -1,8 +1,10 @@
 source 'https://rubygems.org'
 
+gem 'pry'
+gem 'dotenv'
 gem 'fattureincloud_ruby_sdk'
 gem 'fuzzy_match'
-gem 'ruby-openai'
+gem 'ruby-openai', require: 'openai'
 gem 'httparty'
 gem 'tty-prompt'
 gem 'table_print'
