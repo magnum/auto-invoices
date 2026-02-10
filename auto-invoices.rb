@@ -62,6 +62,7 @@ def get_suppliers
                 "Authorization" => "Bearer #{@fic_access_token}"
             }
         )
+        #binding.pry
         response.dig("data").each do |supplier|
             data << supplier
         end
@@ -81,7 +82,10 @@ def get_document_last_number
             "Authorization" => "Bearer #{@fic_access_token}"
         }
     )
-    @number_last = response.dig("data").map{|doc| doc["number"]}.sort.last&.to_i
+    @number_last = response.dig("data")
+    .filter{|doc| doc["year"].to_i == Date.today.year}
+    .map{|doc| doc["number"]}
+    .sort.last&.to_i
     #binding.pry
     raise "get_document_last_number error: #{response.dig("error")} #{response.dig("error_description")}" if response.dig("error")
     @number_last
@@ -92,13 +96,30 @@ def get_payments
     data = []
     pdf_content = File.read(@config[:cc_statement_path])
     client = OpenAI::Client.new(access_token: ENV["OPENAI_API_KEY"])
-    prompt = "Analizza questo estratto conto carta di credito PDF ed estrai tutte le transazioni presenti. 
+    prompt = 
+    <<~PROMPT
+    Analizza questo estratto conto carta di credito PDF ed estrai tutte le transazioni presenti. 
         Per ogni transazione crea un oggetto JSON con: 
         date (formato gg/mm/aa), 
         description (descrizione completa), 
         amount_euro (importo in euro), 
         commissions (importo commissioni se presenti, altrimenti 0), 
-        amount_without_commission (importo - commissioni)."
+        amount_without_commission (importo - commissioni).
+        
+        il formato del json deve essere:
+        {
+            "transactions": [
+                {
+                "date": "01/01/26",
+                "description": "Google Workspace Incode.Imilan",
+                "amount_euro": 50.97,
+                "commissions": 0,
+                "amount_without_commission": 50.97
+                },
+                ...
+            ]
+        }
+    PROMPT
     content = [
     { type: "text", text: prompt },
     {
@@ -301,7 +322,6 @@ end
 
 #payments
 @payments = json_read("payments") || get_payments
-#binding.pry
 puts "Found #{@payments["transactions"].length} payments from credit card statement '#{File.basename(@config[:cc_statement_path])}'"
 #suppliers
 @suppliers = json_read("suppliers") || get_suppliers
