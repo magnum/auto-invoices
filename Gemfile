@@ -1,5 +1,7 @@
 source 'https://rubygems.org'
 
+gem 'logger'
+gem 'base64'
 gem 'pry'
 gem 'dotenv'
 gem 'fattureincloud_ruby_sdk'

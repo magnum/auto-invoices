@@ -39,6 +39,8 @@ bundle install
 3. Create a `.env` file in the project root with your API credentials:
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
+# Optional: modello per OCR PDF (default: gpt-5.4-mini)
+# OPENAI_VISION_MODEL=gpt-5.4-mini
 FATTUREINCLOUD_COMPANY_ID=your_company_id_here
 FATTUREINCLOUD_ACCESS_TOKEN=your_access_token_here
 ```
@@ -47,7 +49,8 @@ FATTUREINCLOUD_ACCESS_TOKEN=your_access_token_here
 
 The script uses the following environment variables:
 
-- `OPENAI_API_KEY`: Your OpenAI API key for GPT-4o access
+- `OPENAI_API_KEY`: Your OpenAI API key for PDF extraction
+- `OPENAI_VISION_MODEL` (optional): OpenAI model for statement/receipt OCR (default: `gpt-5.4-mini`; use `gpt-4o` only if you need maximum reliability on difficult scans)
 - `FATTUREINCLOUD_COMPANY_ID`: Your company ID from Fatture in Cloud
 - `FATTUREINCLOUD_ACCESS_TOKEN`: Your API access token from Fatture in Cloud
 
@@ -166,11 +169,13 @@ The script includes a `report_similar_suppliers` function (currently commented o
 
 ## API Integration
 
-### OpenAI GPT-4o
-- Model: `gpt-4o`
-- Max tokens: 4096
+### OpenAI (vision / OCR)
+- Default model: `gpt-5.4-mini` — multimodal, structured JSON, oriented to high-volume document work without flagship pricing
+- Override: `OPENAI_VISION_MODEL` in `.env` (e.g. `gpt-5-mini`, `gpt-4o`)
+- `reasoning_effort: none` on GPT-5+ family models (faster/cheaper OCR; no deep reasoning needed)
+- Max output: 4096 tokens
 - Response format: JSON object
-- Input: Base64-encoded PDF content
+- Input: Base64-encoded PDF via Chat Completions `file` content parts
 
 ### Fatture in Cloud API v2
 - Endpoints used:
@@ -194,7 +199,7 @@ The script includes a `report_similar_suppliers` function (currently commented o
 - Some receipts may fail validation and require manual intervention (these are reported as errors at the end)
 - The script is designed for Italian accounting workflows (Fatture in Cloud, Italian prompts)
 - AI extraction accuracy depends on PDF quality and format
-- API costs apply for OpenAI GPT-4o usage (approximately $0.01-0.03 per PDF page)
+- API costs depend on model and PDF size; with `gpt-5.4-mini`, OCR is typically much cheaper than `gpt-4o` for single-page receipts and statements
 - Large credit card statements may require multiple API calls
 - Failed receipt creations are collected and displayed at the end for manual processing
 

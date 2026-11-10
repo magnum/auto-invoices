@@ -1,6 +1,7 @@
 GEM
   remote: https://rubygems.org/
   specs:
+    base64 (0.3.0)
     bigdecimal (3.2.2)
     coderay (1.1.3)
     csv (3.3.5)
@@ -10,18 +11,20 @@ GEM
     event_stream_parser (1.0.0)
     faraday (2.9.2)
       faraday-net_http (>= 2.0, < 3.2)
-    faraday-multipart (1.1.1)
+    faraday-multipart (1.2.0)
       multipart-post (~> 2.0)
     faraday-net_http (3.1.0)
       net-http
     fattureincloud_ruby_sdk (2.1.2)
       typhoeus (~> 1.0, >= 1.0.1)
+    ffi (1.17.2)
     ffi (1.17.2-arm64-darwin)
     fuzzy_match (2.1.0)
     httparty (0.23.2)
       csv
       mini_mime (>= 1.0.0)
       multi_xml (>= 0.5.2)
+    logger (1.7.0)
     method_source (1.1.0)
     mini_mime (1.1.5)
     multi_xml (0.7.2)
@@ -56,13 +59,17 @@ GEM
     wisper (2.0.1)
 
 PLATFORMS
+  arm64-darwin-23
   arm64-darwin-25
+  arm64-darwin-27
 
 DEPENDENCIES
+  base64
   dotenv
   fattureincloud_ruby_sdk
   fuzzy_match
   httparty
+  logger
   pry
   ruby-openai
   table_print

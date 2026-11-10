@@ -32,6 +32,56 @@ end
 @receipts = nil
 @errors = []
 
+# Vision/OCR su PDF: default gpt-5.4-mini (multimodale, structured output, ~3× input più economico di gpt-4o).
+# Override con OPENAI_VISION_MODEL (es. gpt-5-mini, gpt-4o se serve massima affidabilità).
+DEFAULT_OPENAI_VISION_MODEL = "gpt-5.4-mini"
+
+
+def openai_client
+    @openai_client ||= OpenAI::Client.new(access_token: ENV["OPENAI_API_KEY"])
+end
+
+
+def openai_vision_model
+    ENV.fetch("OPENAI_VISION_MODEL", DEFAULT_OPENAI_VISION_MODEL)
+end
+
+
+def openai_reasoning_model?(model = openai_vision_model)
+    model.match?(/\A(gpt-[56]|o\d)/)
+end
+
+
+def openai_pdf_chat_parameters(content)
+    params = {
+        model: openai_vision_model,
+        messages: [{ role: "user", content: content }],
+        response_format: { type: "json_object" }
+    }
+    if openai_reasoning_model?
+        params[:max_completion_tokens] = 4096
+        params[:reasoning_effort] = "none"
+    else
+        params[:max_tokens] = 4096
+    end
+    params
+end
+
+
+def parse_openai_json_content(content)
+    content =~ /\A```json\s*(.*?)\s*```\s*\z/m ? json_str = $1 : json_str = content
+    JSON.parse(json_str)
+end
+
+
+def openai_pdf_json_chat(content)
+    response = openai_client.chat(parameters: openai_pdf_chat_parameters(content))
+    message_content = response.dig("choices", 0, "message", "content")
+    raise "OpenAI: risposta vuota (#{openai_vision_model})" if message_content.nil? || message_content.strip.empty?
+
+    parse_openai_json_content(message_content)
+end
+
 
 def json_file_path(code)
     FileUtils.mkdir_p(File.join("data", @config[:subdir]))
@@ -48,6 +98,24 @@ end
 
 def json_write(code, data)
     File.write(json_file_path(code), JSON.pretty_generate(data))
+end
+
+
+def receipt_payment_hash(receipt)
+    payment = receipt["payment"]
+    return payment if payment.is_a?(Hash)
+    return nil if payment.nil? || payment == ""
+
+    if payment.is_a?(String)
+        begin
+            parsed = JSON.parse(payment)
+            return parsed if parsed.is_a?(Hash)
+        rescue JSON::ParserError
+            nil
+        end
+    end
+
+    nil
 end
 
 
@@ -93,9 +161,7 @@ end
 
 
 def get_payments
-    data = []
     pdf_content = File.read(@config[:cc_statement_path])
-    client = OpenAI::Client.new(access_token: ENV["OPENAI_API_KEY"])
     prompt = 
     <<~PROMPT
     Analizza questo estratto conto carta di credito PDF ed estrai tutte le transazioni presenti. 
@@ -131,21 +197,7 @@ def get_payments
     }
     ]
 
-    response = client.chat(
-    parameters: {
-        model: "gpt-4o",
-        messages: [{
-        role: "user",
-        content: content
-        }],
-        max_tokens: 4096,
-        response_format: { type: "json_object" }
-    }
-    )
-
-    content = response.dig("choices", 0, "message", "content")
-    content =~ /\A```json\s*(.*?)\s*```\s*\z/m  ? json_str = $1 : json_str = content
-    data = JSON.parse(json_str)
+    data = openai_pdf_json_chat(content)
     json_write("payments", data)
     #binding.pry
     data
@@ -153,9 +205,7 @@ end
 
 
 def get_receipt_data(file_path) 
-    data = []
     pdf_content = File.read(file_path)
-    client = OpenAI::Client.new(access_token: ENV["OPENAI_API_KEY"])
     suppliers_for_match = @suppliers.map{|s| {id: s["id"], name: s["name"]}}
     prompt = "
         Analizza il file pdf della ricevuta di pagamentoed estrai i dati essenziali in formato JSON con i seguenti attributi: 
@@ -193,21 +243,7 @@ def get_receipt_data(file_path)
         }
     }
     ]
-    response = client.chat(
-    parameters: {
-        model: "gpt-4o",
-        messages: [{
-        role: "user",
-        content: content
-        }],
-        max_tokens: 4096,
-        response_format: { type: "json_object" }
-    }
-    )
-    content = response.dig("choices", 0, "message", "content")
-    content =~ /\A```json\s*(.*?)\s*```\s*\z/m  ? json_str = $1 : json_str = content
-    data = JSON.parse(json_str)
-    data
+    openai_pdf_json_chat(content)
 end
 
 
@@ -243,7 +279,7 @@ end
 
 
 def create_document(receipt)
-    net_price = (receipt.dig("payment", "amount_without_commission") || 0).to_f
+    net_price = (receipt_payment_hash(receipt)&.[]("amount_without_commission") || 0).to_f
     gross_price = net_price*1.22
     data = {
         data: {
@@ -335,6 +371,7 @@ puts "Last document number: #{@number_last}#{@config[:number_suffix]}, next numb
 @receipts = json_read("receipts") || get_receipts
 puts "Found #{@receipts.length} receipts"
 @receipts = @receipts.map do |receipt|
+    receipt["payment"] = receipt_payment_hash(receipt)
     receipt["supplier"] = @suppliers.find{|s| s["id"].to_s == receipt["matched_supplier_id"].to_s}
     receipt
 end
@@ -352,10 +389,10 @@ end
 
 def receipt_info(receipt)
     [
-        "#{receipt["description"].truncate(30)}",
+        "#{receipt["description"]&.truncate(30)}",
         "#{sprintf("%.2f", receipt["amount_total"])} #{receipt["currency"]}",
         "→",
-        (receipt.dig("payment", "amount_without_commission") || "NO-AMOUNT"),
+        (receipt_payment_hash(receipt)&.[]("amount_without_commission") || "NO-AMOUNT"),
         "→",
         (receipt.dig("supplier", "name") || "NO-SUPPLIER"),
     ].join(" ")
