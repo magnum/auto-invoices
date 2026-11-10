@@ -6,6 +6,8 @@ require 'openai'
 require 'base64'
 require 'httparty'
 require 'tty-prompt'
+require 'fuzzy_match'
+require 'set'
 
 # Gracefully handle Ctrl+C
 Signal.trap("INT") do
@@ -27,14 +29,20 @@ end
 @config[:cc_statement_path] = ARGV[2]
 @config[:receipts_path] = ARGV[3]
 
+begin
+    @config[:date] = Date.parse(@config[:date].to_s).strftime("%Y-%m-%d")
+rescue ArgumentError, Date::Error
+    abort "Data non valida: #{ARGV[0].inspect}. Usa una data esistente, per esempio 2026-09-30 o 2026-10-31."
+end
+
 @payments = nil
 @suppliers = nil
 @receipts = nil
 @errors = []
 
-# Vision/OCR su PDF: default gpt-5.4-mini (multimodale, structured output, ~3× input più economico di gpt-4o).
-# Override con OPENAI_VISION_MODEL (es. gpt-5-mini, gpt-4o se serve massima affidabilità).
-DEFAULT_OPENAI_VISION_MODEL = "gpt-5.4-mini"
+# Prova OCR: gpt-5.6-sol (sopra gpt-4o e gpt-5.4-mini, sotto i flagship tipo gpt-6-astra).
+# Override: OPENAI_VISION_MODEL=gpt-4o oppure OPENAI_VISION_MODEL=gpt-6-astra
+DEFAULT_OPENAI_VISION_MODEL = "gpt-5.6-sol"
 
 
 def openai_client
@@ -59,8 +67,8 @@ def openai_pdf_chat_parameters(content)
         response_format: { type: "json_object" }
     }
     if openai_reasoning_model?
-        params[:max_completion_tokens] = 4096
-        params[:reasoning_effort] = "none"
+        params[:max_completion_tokens] = 8192
+        params[:reasoning_effort] = openai_vision_model.match?(/sol|astra/) ? "low" : "none"
     else
         params[:max_tokens] = 4096
     end
@@ -116,6 +124,311 @@ def receipt_payment_hash(receipt)
     end
 
     nil
+end
+
+
+def payment_transactions
+    (@payments || {}).fetch("transactions", [])
+end
+
+
+def receipt_match_text(receipt)
+    [
+        receipt["description"],
+        receipt["supplier_name"],
+        receipt["matched_supplier_name"],
+        receipt.dig("supplier", "name"),
+        receipt["receipt_number"],
+        File.basename(receipt["file_path"].to_s, ".pdf"),
+    ].compact.join(" ")
+end
+
+
+def parse_transaction_date(date_str)
+    return nil if date_str.nil? || date_str.to_s.strip.empty?
+
+    if date_str.to_s.include?("/")
+        day, month, year = date_str.split("/").map(&:to_i)
+        year += 2000 if year < 100
+        return Date.new(year, month, day)
+    end
+
+    Date.parse(date_str.to_s)
+rescue ArgumentError, Date::Error
+    nil
+end
+
+
+def receipt_date(receipt)
+    Date.parse(receipt["date"].to_s)
+rescue ArgumentError, Date::Error
+    nil
+end
+
+
+PAYMENT_TEXT_STOPWORDS = %w[
+    invoice fattura receipt payment pagamento per for the and with from
+    subscription plan monthly annual acquisto servizi service numero
+].freeze
+
+
+def payment_text_tokens(text)
+    text.to_s.downcase.scan(/[a-z0-9]{4,}/) - PAYMENT_TEXT_STOPWORDS
+end
+
+
+def receipt_currency_eur?(receipt)
+    currency = receipt["currency"].to_s.upcase
+    currency.empty? || currency == "EUR"
+end
+
+
+def payment_amount_ratio(transaction, receipt)
+    receipt_amount = receipt["amount_total"].to_f.abs
+    txn_amount = transaction["amount_without_commission"].to_f.abs
+    return nil if receipt_amount <= 0 || txn_amount <= 0
+
+    txn_amount / receipt_amount
+end
+
+
+def payment_amount_close?(transaction, receipt)
+    ratio = payment_amount_ratio(transaction, receipt)
+    return false unless ratio
+
+    if receipt_currency_eur?(receipt)
+        (ratio - 1).abs <= 0.03
+    else
+        ratio.between?(0.78, 1.02)
+    end
+end
+
+
+def payment_amount_acceptable?(transaction, receipt)
+    ratio = payment_amount_ratio(transaction, receipt)
+    return false unless ratio
+
+    if receipt_currency_eur?(receipt)
+        (ratio - 1).abs <= 0.12
+    else
+        ratio.between?(0.70, 1.08)
+    end
+end
+
+
+def payment_date_days(transaction, receipt)
+    rd = receipt_date(receipt)
+    td = parse_transaction_date(transaction["date"])
+    return nil unless rd && td
+
+    (rd - td).abs
+end
+
+
+def transaction_fuzzy_score(receipt_text, transaction)
+    matcher = FuzzyMatch.new([transaction], read: "description")
+    result = matcher.find_with_score(receipt_text)
+    return 0 unless result
+
+    result[1].to_f
+end
+
+
+def payment_text_score(receipt, transaction)
+    receipt_text = receipt_match_text(receipt)
+    fuzzy_score = transaction_fuzzy_score(receipt_text, transaction)
+    receipt_tokens = payment_text_tokens(receipt_text)
+    transaction_tokens = payment_text_tokens(transaction["description"])
+    overlap = if receipt_tokens.empty? || transaction_tokens.empty?
+        0.0
+    else
+        shared = receipt_tokens.count do |token|
+            transaction_tokens.any? { |other| other.include?(token) || token.include?(other) }
+        end
+        shared.to_f / [receipt_tokens.length, 3].min
+    end
+
+    [fuzzy_score, overlap].max
+end
+
+
+def payment_match_score(transaction, receipt, text_score)
+    return -Float::INFINITY unless payment_amount_acceptable?(transaction, receipt)
+    return -Float::INFINITY if text_score < 0.18 && !payment_amount_close?(transaction, receipt)
+
+    days = payment_date_days(transaction, receipt)
+    if days && days > 75 && !payment_amount_close?(transaction, receipt)
+        return -Float::INFINITY
+    end
+
+    amount_bonus = payment_amount_close?(transaction, receipt) ? 40 : 0
+    date_bonus = days && days <= 14 ? 8 : 0
+    (text_score * 100) + amount_bonus + date_bonus
+end
+
+
+def payment_same_transaction?(left, right)
+    return false unless left.is_a?(Hash) && right.is_a?(Hash)
+
+    left["description"].to_s == right["description"].to_s &&
+        left["date"].to_s == right["date"].to_s &&
+        left["amount_without_commission"].to_f == right["amount_without_commission"].to_f
+end
+
+
+def find_payment_transaction_index(payment)
+    payment_transactions.each_with_index do |transaction, index|
+        return index if payment_same_transaction?(transaction, payment)
+    end
+    nil
+end
+
+
+def assign_unique_eur_amounts!(receipts, transactions, used_transactions, used_receipts, assignments)
+    unmatched = receipts.each_index.reject { |index| used_receipts.include?(index) }
+    unmatched.select { |index| receipt_currency_eur?(receipts[index]) }.group_by { |index|
+        receipts[index]["amount_total"].to_f.round(2)
+    }.each do |amount, receipt_indexes|
+        next if amount <= 0
+
+        transaction_indexes = transactions.each_index.select do |index|
+            next false if used_transactions.include?(index)
+
+            txn_amount = transactions[index]["amount_without_commission"].to_f.abs
+            (txn_amount - amount).abs <= [0.05, amount * 0.01].max
+        end
+        next unless transaction_indexes.length == receipt_indexes.length
+
+        receipt_indexes.zip(transaction_indexes).each do |receipt_index, transaction_index|
+            used_transactions << transaction_index
+            used_receipts << receipt_index
+            assignments[receipt_index] = transactions[transaction_index]
+        end
+    end
+end
+
+
+def assign_payments_to_receipts!(receipts)
+    transactions = payment_transactions
+    return if transactions.empty?
+
+    pairs = []
+    receipts.each_with_index do |receipt, receipt_index|
+        transactions.each_with_index do |transaction, transaction_index|
+            text_score = payment_text_score(receipt, transaction)
+            score = payment_match_score(transaction, receipt, text_score)
+            next if score < 35
+
+            pairs << [score, receipt_index, transaction_index, transaction]
+        end
+    end
+
+    pairs.sort_by! { |score, _, _, _| -score }
+    used_transactions = Set.new
+    used_receipts = Set.new
+    assignments = {}
+
+    pairs.each do |_score, receipt_index, transaction_index, transaction|
+        next if used_transactions.include?(transaction_index)
+        next if used_receipts.include?(receipt_index)
+
+        used_transactions << transaction_index
+        used_receipts << receipt_index
+        assignments[receipt_index] = transaction
+    end
+
+    assign_unique_eur_amounts!(receipts, transactions, used_transactions, used_receipts, assignments)
+
+    receipts.each_with_index do |receipt, receipt_index|
+        receipt["payment"] = assignments[receipt_index]
+    end
+end
+
+
+def assign_suppliers!(receipts)
+    return if @suppliers.nil? || @suppliers.empty?
+
+    fuzzy = FuzzyMatch.new(@suppliers, read: "name")
+    receipts.each do |receipt|
+        existing = @suppliers.find { |supplier| supplier["id"].to_s == receipt["matched_supplier_id"].to_s }
+        if existing
+            receipt["supplier"] = existing
+            next
+        end
+
+        query = receipt["supplier_name"].to_s.strip
+        query = receipt["description"].to_s.strip if query.empty?
+        hit = fuzzy.find_with_score(query) if query.length >= 3
+        if hit && hit[1].to_f >= 0.42
+            receipt["supplier"] = hit[0]
+            receipt["matched_supplier_id"] = hit[0]["id"]
+            receipt["matched_supplier_name"] = hit[0]["name"]
+        else
+            receipt["supplier"] = nil
+        end
+    end
+end
+
+
+def llm_assign_unmatched_payments!(receipts)
+    unmatched = receipts.each_with_index.select { |receipt, _index| receipt_payment_hash(receipt).nil? }
+    return if unmatched.empty?
+
+    used = receipts.filter_map { |receipt| find_payment_transaction_index(receipt_payment_hash(receipt)) }.to_set
+    free = payment_transactions.each_with_index.reject { |_transaction, index| used.include?(index) }
+    return if free.empty?
+
+    payload = {
+        receipts: unmatched.map { |receipt, index|
+            {
+                index: index,
+                description: receipt["description"],
+                supplier_name: receipt["supplier_name"],
+                amount_total: receipt["amount_total"],
+                currency: receipt["currency"],
+                date: receipt["date"]
+            }
+        },
+        transactions: free.map { |transaction, index|
+            {
+                index: index,
+                date: transaction["date"],
+                description: transaction["description"],
+                amount_euro: transaction["amount_without_commission"]
+            }
+        }
+    }
+    prompt = <<~PROMPT
+        Abbina le ricevute alle transazioni della carta di credito.
+        Una transazione può essere usata una sola volta.
+        Per gli importi in USD la transazione è in euro: il cambio è circa 0.80-1.00 euro per dollaro.
+        Se non sei sicuro, non abbinare quella ricevuta.
+        Rispondi solo con JSON: {"matches":[{"receipt_index":0,"transaction_index":1}]}
+        Dati: #{payload.to_json}
+    PROMPT
+    puts "Asking #{openai_vision_model} to match #{unmatched.length} receipts still without an amount"
+    parsed = openai_pdf_json_chat([{ type: "text", text: prompt }])
+    matches = parsed["matches"]
+    return unless matches.is_a?(Array)
+
+    claimed = used.dup
+    matches.each do |match|
+        receipt_index = Integer(match["receipt_index"])
+        transaction_index = Integer(match["transaction_index"])
+        next if claimed.include?(transaction_index)
+        next unless receipts[receipt_index] && payment_transactions[transaction_index]
+        next unless receipt_payment_hash(receipts[receipt_index]).nil?
+
+        transaction = payment_transactions[transaction_index]
+        next unless payment_amount_acceptable?(transaction, receipts[receipt_index])
+
+        receipts[receipt_index]["payment"] = transaction
+        claimed << transaction_index
+    rescue ArgumentError, TypeError
+        next
+    end
+rescue StandardError => error
+    puts "Payment match fallback skipped: #{error.message}"
 end
 
 
@@ -206,32 +519,17 @@ end
 
 def get_receipt_data(file_path) 
     pdf_content = File.read(file_path)
-    suppliers_for_match = @suppliers.map{|s| {id: s["id"], name: s["name"]}}
     prompt = "
         Analizza il file pdf della ricevuta di pagamentoed estrai i dati essenziali in formato JSON con i seguenti attributi: 
         date (data del pagamento), 
         receipt_number (numero della ricevuta o invoice number), 
         description (descrizione), 
         amount_total (importo totale), 
-        supplier_name (nome del fornitore).
-        In amount_total indica solo il numero, non la valuta. 
+        supplier_name (nome del fornitore, come scritto sulla ricevuta).
+        In amount_total indica solo il numero, non la valuta.
         La data deve essere in formato yyyy-mm-dd.
-        Metti la valuta in attributo currency.
-        Aggiungi attributo matched_supplier_id e matched_supplier_name inizialmente vuoti.
-        
-        Ti aggiungo lista fornitori come json: #{suppliers_for_match.to_json}.
-        Trova il fornitore utilizzando l'attributo name degli elementi del json fornitori
-        e confrontandolo con l'attributo supplier_name della ricevuta, 
-        non usare una ricerca esatta, ma una ricerca fuzzy perchè a volte il nome del fornitore è scritto in modo diverso.
-        Se trovi un fornitore valorizza gli attributi matched_supplier_id e matched_supplier_name con l'id e il name del fornitore.
-        Se non trovi un fornitore, lascia matched_supplier_id e matched_supplier_name vuoti.
-        
-        Ti aggiungo anche lista pagamenti come json: #{@payments.to_json}.
-        Trova il pagamento utilizzando l'attributo description degli elementi del json pagamenti  
-        e confrontandolo con il campo description della ricevuta,
-        non usare una ricerca esatta, ma una ricerca fuzzy perchè a volte il nome del fornitore è scritto in modo diverso.
-        Se trovi un pagmamento valorizza l'attributo payment della ricevuta con l'oggetto payment dal json pagamenti.
-        Se ci sono due pagamenti simili come descrizione, prendi quello con l'importo più vicino al totale della ricevuta.  
+        Metti la valuta in attributo currency (EUR, USD, ...).
+        Non inventare importi: usa il totale della ricevuta.
     "
     content = [
     { type: "text", text: prompt },
@@ -279,7 +577,7 @@ end
 
 
 def create_document(receipt)
-    net_price = (receipt_payment_hash(receipt)&.[]("amount_without_commission") || 0).to_f
+    net_price = receipt_amount_eur(receipt)
     gross_price = net_price*1.22
     data = {
         data: {
@@ -370,12 +668,12 @@ puts "Last document number: #{@number_last}#{@config[:number_suffix]}, next numb
 #receipts
 @receipts = json_read("receipts") || get_receipts
 puts "Found #{@receipts.length} receipts"
-@receipts = @receipts.map do |receipt|
-    receipt["payment"] = receipt_payment_hash(receipt)
-    receipt["supplier"] = @suppliers.find{|s| s["id"].to_s == receipt["matched_supplier_id"].to_s}
-    receipt
-end
+assign_suppliers!(@receipts)
+assign_payments_to_receipts!(@receipts)
+llm_assign_unmatched_payments!(@receipts)
 json_write("receipts", @receipts.compact)
+matched = @receipts.count { |receipt| !receipt_payment_hash(receipt).nil? }
+puts "Matched #{matched}/#{@receipts.length} receipts to credit card transactions"
 
 
 class String
@@ -387,29 +685,137 @@ class String
 end
 
 
-def receipt_info(receipt)
+def receipt_without_transaction?(receipt)
+    receipt_payment_hash(receipt).nil?
+end
+
+
+def receipt_needs_conversion?(receipt)
+    receipt["currency"].to_s.upcase == "USD"
+end
+
+
+def receipt_markers(receipt)
+    marks = []
+    marks << "*" if receipt_without_transaction?(receipt)
+    marks << "#" if receipt_needs_conversion?(receipt)
+    marks.join
+end
+
+
+def load_usd_eur_rates(dates)
+    parsed = dates.filter_map do |value|
+        Date.parse(value.to_s)
+    rescue ArgumentError, Date::Error
+        nil
+    end
+    @usd_eur_rates = {}
+    return if parsed.empty?
+
+    from = parsed.min - 7
+    to = parsed.max
+    response = HTTParty.get("https://api.frankfurter.dev/v1/#{from}..#{to}?from=USD&to=EUR")
+    series = response["rates"]
+    raise "Cambio USD/EUR non disponibile (#{from}..#{to})" unless series.is_a?(Hash)
+
+    @usd_eur_rates = series
+end
+
+
+def usd_to_eur_rate(date)
+    day = Date.parse(date.to_s)
+    8.times do
+        rate = @usd_eur_rates.dig(day.strftime("%Y-%m-%d"), "EUR")
+        return rate.to_f if rate
+
+        day -= 1
+    end
+    raise "Cambio USD/EUR non disponibile per #{date}"
+end
+
+
+def receipt_amount_eur(receipt)
+    amount = receipt["amount_total"].to_f
+    if receipt_needs_conversion?(receipt)
+        (amount * usd_to_eur_rate(receipt["date"])).round(2)
+    elsif receipt_without_transaction?(receipt)
+        amount
+    else
+        receipt_payment_hash(receipt)["amount_without_commission"].to_f
+    end
+end
+
+
+def receipt_amount_label(receipt)
+    labels = []
+    labels << "no-transaction" if receipt_without_transaction?(receipt)
+    labels << "converted" if receipt_needs_conversion?(receipt)
+    amount = sprintf("%.2f", receipt_amount_eur(receipt))
+    labels.empty? ? amount : "#{labels.join(" ")} #{amount}"
+end
+
+
+def amount_legend_lines
     [
+        "* no-transaction: nessun movimento in estratto conto, importo preso dal documento",
+        "# converted: importo in USD convertito in EUR alla data della ricevuta",
+    ]
+end
+
+
+def print_amount_legend
+    amount_legend_lines.each { |line| puts line }
+end
+
+
+def print_to_check(receipts)
+    no_transaction = receipts.select { |receipt| receipt_without_transaction?(receipt) }
+    converted = receipts.select { |receipt| receipt_needs_conversion?(receipt) }
+    return if no_transaction.empty? && converted.empty?
+
+    puts "\nto check"
+    if no_transaction.any?
+        puts "\nno-transaction"
+        no_transaction.each { |receipt| puts receipt_info(receipt) }
+    end
+    if converted.any?
+        puts "\nconverted"
+        converted.each { |receipt| puts receipt_info(receipt) }
+    end
+    puts
+    print_amount_legend
+end
+
+
+def receipt_info(receipt)
+    line = [
         "#{receipt["description"]&.truncate(30)}",
-        "#{sprintf("%.2f", receipt["amount_total"])} #{receipt["currency"]}",
+        "#{sprintf("%.2f", receipt["amount_total"].to_f)} #{receipt["currency"]}",
         "→",
-        (receipt_payment_hash(receipt)&.[]("amount_without_commission") || "NO-AMOUNT"),
+        receipt_amount_label(receipt),
         "→",
         (receipt.dig("supplier", "name") || "NO-SUPPLIER"),
     ].join(" ")
+    mark = receipt_markers(receipt)
+    mark.empty? ? line : "#{line} #{mark}"
 end
 
 # Interactive selection
+load_usd_eur_rates(@receipts.select { |receipt| receipt_needs_conversion?(receipt) }.map { |receipt| receipt["date"] })
 prompt = TTY::Prompt.new
 choices = @receipts.map.with_index do |receipt, index|
     { name: receipt_info(receipt), value: index }
 end
+choices.concat(amount_legend_lines.map { |line| { name: line, value: nil, disabled: "\u200b" } })
 puts "Use ↑/↓ arrows to navigate, SPACE to select/deselect, ENTER to confirm\n\n"
 selected_indices = prompt.multi_select(
   "Select transactions to include:",
   choices,
   per_page: 100,
-  echo: false
+  echo: false,
+  symbols: { cross: " " }
 )
+selected_indices = selected_indices.compact
 if selected_indices.any?
   selected_receipts = selected_indices.map { |idx| @receipts[idx] }
   selected_receipts.each do |receipt|
@@ -424,4 +830,5 @@ if @errors.any?
         puts error
     end
 end
+print_to_check(@receipts)
 

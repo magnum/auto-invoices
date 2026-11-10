@@ -39,8 +39,8 @@ bundle install
 3. Create a `.env` file in the project root with your API credentials:
 ```env
 OPENAI_API_KEY=your_openai_api_key_here
-# Optional: modello per OCR PDF (default: gpt-5.4-mini)
-# OPENAI_VISION_MODEL=gpt-5.4-mini
+# Optional: modello per OCR PDF (default: gpt-5.6-sol). gpt-6-astra è molto più caro.
+# OPENAI_VISION_MODEL=gpt-5.6-sol
 FATTUREINCLOUD_COMPANY_ID=your_company_id_here
 FATTUREINCLOUD_ACCESS_TOKEN=your_access_token_here
 ```
@@ -50,7 +50,7 @@ FATTUREINCLOUD_ACCESS_TOKEN=your_access_token_here
 The script uses the following environment variables:
 
 - `OPENAI_API_KEY`: Your OpenAI API key for PDF extraction
-- `OPENAI_VISION_MODEL` (optional): OpenAI model for statement/receipt OCR (default: `gpt-5.4-mini`; use `gpt-4o` only if you need maximum reliability on difficult scans)
+- `OPENAI_VISION_MODEL` (optional): OpenAI model for statement/receipt OCR (default: `gpt-5.6-sol`; before that the script used `gpt-4o`, then a short trial of `gpt-5.4-mini`)
 - `FATTUREINCLOUD_COMPANY_ID`: Your company ID from Fatture in Cloud
 - `FATTUREINCLOUD_ACCESS_TOKEN`: Your API access token from Fatture in Cloud
 
@@ -107,7 +107,7 @@ This command:
 1. **Extract Payments**: The script analyzes the credit card statement PDF and extracts all transactions
 2. **Fetch Suppliers**: Retrieves all suppliers from your Fatture in Cloud account
 3. **Process Receipts**: Analyzes receipt PDFs in the specified folder
-4. **Match Transactions**: Uses fuzzy matching to associate transactions with suppliers
+4. **Match payments**: Matches each receipt to one credit card transaction (fuzzy description + amount + date; one transaction per receipt)
 5. **Interactive Selection**: Displays a list where you can select which transactions to process
    - Use ↑/↓ arrow keys to navigate
    - Press SPACE to select/deselect items
@@ -170,9 +170,9 @@ The script includes a `report_similar_suppliers` function (currently commented o
 ## API Integration
 
 ### OpenAI (vision / OCR)
-- Default model: `gpt-5.4-mini` — multimodal, structured JSON, oriented to high-volume document work without flagship pricing
-- Override: `OPENAI_VISION_MODEL` in `.env` (e.g. `gpt-5-mini`, `gpt-4o`)
-- `reasoning_effort: none` on GPT-5+ family models (faster/cheaper OCR; no deep reasoning needed)
+- Default model: `gpt-5.6-sol` for this trial (stronger document reading than `gpt-4o` / `gpt-5.4-mini`, without `gpt-6-astra` pricing)
+- Override: `OPENAI_VISION_MODEL` in `.env` (`gpt-4o` to go back, `gpt-6-astra` if sol is still not enough)
+- `reasoning_effort: low` on sol/astra; `none` on the cheaper GPT-5 mini models
 - Max output: 4096 tokens
 - Response format: JSON object
 - Input: Base64-encoded PDF via Chat Completions `file` content parts
@@ -199,7 +199,7 @@ The script includes a `report_similar_suppliers` function (currently commented o
 - Some receipts may fail validation and require manual intervention (these are reported as errors at the end)
 - The script is designed for Italian accounting workflows (Fatture in Cloud, Italian prompts)
 - AI extraction accuracy depends on PDF quality and format
-- API costs depend on model and PDF size; with `gpt-5.4-mini`, OCR is typically much cheaper than `gpt-4o` for single-page receipts and statements
+- API costs depend on model and PDF size; `gpt-5.6-sol` costs more per page than `gpt-4o` or `gpt-5.4-mini`
 - Large credit card statements may require multiple API calls
 - Failed receipt creations are collected and displayed at the end for manual processing
 
