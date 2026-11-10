@@ -624,7 +624,7 @@ def create_document(receipt)
                         "DatiFattureCollegate": [
                             {
                                 "Data": Date.parse(receipt["date"]).strftime("%Y-%m-%d"),
-                                "IdDocumento": receipt["receipt_number"]
+                                "IdDocumento": receipt["receipt_number"].to_s[0, 20]
                             }
                         ]
                     }
